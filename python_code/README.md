@@ -75,10 +75,10 @@ az account show -o table
 python .\python_code\test_azure_access.py --help
 
 # list resource groups in a subscription
-python .\python_code\test_azure_access.py --subscription 3df32f0f-32c5-49ab-adf0-35f811f7587e --list-rgs
+python .\python_code\test_azure_access.py --subscription <SUB_ID> --list-rgs
 
 # check a resource group and list containers in a storage account
-python .\python_code\test_azure_access.py --subscription 3df32f0f-32c5-49ab-adf0-35f811f7587e  --resource-group rg-asiaspanel-dev --storage-account stasiaspaneldev
+python .\python_code\test_azure_access.py --subscription <SUB_ID>  --resource-group rg-asiaspanel-dev --storage-account stasiaspaneldev
 
 # list blobs in a container
 python .\python_code\test_azure_access.py --storage-account stasiaspaneldev --container <CONTAINER>
@@ -91,4 +91,4 @@ If you prefer not to activate the environment, you can run the script with `cond
 ```
 
 
-az resource show --ids "/subscriptions/3df32f0f-32c5-49ab-adf0-35f811f7587e/resourceGroups/rg-asiaspanel-dev/providers/Microsoft.Web/staticSites/asiaspanel-web" -o json
+az resource show --ids "/subscriptions/<subscr>/resourceGroups/rg-asiaspanel-dev/providers/Microsoft.Web/staticSites/asiaspanel-web" -o json
