@@ -45,10 +45,17 @@ Quick run (Anaconda Prompt / VS Code terminal)
 
 1) Open the Anaconda Prompt terminal in VS Code (Terminal → New Terminal → Anaconda Prompt) or open your Anaconda Prompt.
 
-2) Activate the conda environment:
+2) Create and activate the conda environment (one-time):
 
 ```powershell
-conda activate asia_01
+conda create -n asia_02 python=3.11 -y
+conda activate asia_02
+```
+
+Or run the helper script from the repo root in an Anaconda Prompt:
+
+```powershell
+scripts\create_env.bat
 ```
 
 3) Verify Python and install deps (if not already):
@@ -87,7 +94,7 @@ python .\python_code\test_azure_access.py --storage-account stasiaspaneldev --co
 If you prefer not to activate the environment, you can run the script with `conda run`:
 
 ```powershell
-& "C:\\Users\\marku\\Miniconda3\\Scripts\\conda.exe" run -n asia_01 --no-capture-output python .\python_code\test_azure_access.py --list-rgs
+& "C:\\Users\\marku\\Miniconda3\\Scripts\\conda.exe" run -n asia_02 --no-capture-output python .\python_code\test_azure_access.py --list-rgs
 ```
 
 

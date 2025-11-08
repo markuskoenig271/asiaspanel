@@ -8,18 +8,71 @@
   <h1>Asia's Panel Updated</h1>
   <p>Select a voice:</p>
   <select id="voiceSelect"></select>
-  <button id="testBtn">Test Voice</button>
+
+  <h2>Translate</h2>
+  <textarea id="inputText" rows="4" cols="60">Hello world</textarea><br>
+  <button id="translateBtn">Translate</button>
+  <div id="translated"></div>
+
+  <h2>Text-to-Speech</h2>
+  <input id="ttsText" value="Hello from Asia's Panel" style="width:60%" />
+  <button id="ttsBtn">Generate TTS</button>
+  <div id="audioHolder"></div>
+
   <script>
+    const API_BASE = '';// same origin: served by backend when running uvicorn (http://localhost:8001)
+
     async function loadVoices() {
-      const res = await fetch("https://func-asiaspanel-dev.azurewebsites.net/api/GetVoices");
-      const voices = await res.json();
-      const sel = document.getElementById("voiceSelect");
-      voices.forEach(v => {
-        const o = document.createElement("option");
-        o.value = v.id; o.textContent = v.label;
-        sel.appendChild(o);
-      });
+      try {
+        const res = await fetch(API_BASE + '/api/config');
+        const cfg = await res.json();
+        const sel = document.getElementById('voiceSelect');
+        sel.innerHTML = '';
+        (cfg.voices || ['default']).forEach(v => {
+          const o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          sel.appendChild(o);
+        });
+      } catch (e) {
+        console.warn('Failed to load voices from /api/config, using defaults', e);
+        const sel = document.getElementById('voiceSelect');
+        ['default','female_1','male_1'].forEach(v => {
+          const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
+        });
+      }
     }
+
+    document.getElementById('translateBtn').addEventListener('click', async () => {
+      const text = document.getElementById('inputText').value;
+      const target = 'en';
+      const res = await fetch(API_BASE + '/api/translate', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text, target})
+      });
+      const body = await res.json();
+      document.getElementById('translated').textContent = JSON.stringify(body);
+    });
+
+    document.getElementById('ttsBtn').addEventListener('click', async () => {
+      const text = document.getElementById('ttsText').value;
+      const voice = document.getElementById('voiceSelect').value;
+      const res = await fetch(API_BASE + '/api/tts', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({text, voice, format: 'wav'})
+      });
+      const body = await res.json();
+      const holder = document.getElementById('audioHolder');
+      holder.innerHTML = '';
+      if (body.url) {
+        const a = document.createElement('audio');
+        a.controls = true;
+        a.src = body.url;
+        holder.appendChild(a);
+      } else {
+        holder.textContent = JSON.stringify(body);
+      }
+    });
+
     loadVoices();
   </script>
 </body>
