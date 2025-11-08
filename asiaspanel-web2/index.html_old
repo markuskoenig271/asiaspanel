@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Asia's Panel</title>
+</head>
+<body>
+  <h1>Asia's Panel Updated</h1>
+  <p>Select a voice:</p>
+  <select id="voiceSelect"></select>
+  <button id="testBtn">Test Voice</button>
+  <script>
+    async function loadVoices() {
+      const res = await fetch("https://func-asiaspanel-dev.azurewebsites.net/api/GetVoices");
+      const voices = await res.json();
+      const sel = document.getElementById("voiceSelect");
+      voices.forEach(v => {
+        const o = document.createElement("option");
+        o.value = v.id; o.textContent = v.label;
+        sel.appendChild(o);
+      });
+    }
+    loadVoices();
+  </script>
+</body>
+</html>
