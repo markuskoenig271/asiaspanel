@@ -14,20 +14,31 @@ import time
 import logging
 
 # Configure logging to both console and file
+# For Azure: only log to console (Azure captures stdout)
+# For local: log to file if logs directory exists
 LOGS_DIR = Path(__file__).resolve().parent.parent / 'logs'
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
-log_file = LOGS_DIR / 'log_file.log'
+log_handlers = [logging.StreamHandler()]  # Always log to console
+
+# Only add file handler if we can create the logs directory (local development)
+try:
+    if LOGS_DIR.exists() or LOGS_DIR.parent.exists():
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LOGS_DIR / 'log_file.log'
+        log_handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
+        print(f"File logging enabled: {log_file}")
+except Exception as e:
+    print(f"File logging disabled (running on Azure?): {e}")
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler(log_file, encoding='utf-8')  # File output
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
-logger.info(f"Logging to file: {log_file}")
+if len(log_handlers) > 1:
+    logger.info(f"Logging to file: {log_file}")
+else:
+    logger.info("Logging to console only (Azure mode)")
 
 # dotenv & openai (optional)
 from dotenv import load_dotenv

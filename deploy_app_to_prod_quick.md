@@ -27,7 +27,7 @@ git push origin master
 
 **Get URL**:
 ```powershell
-az staticwebapp show --name asiaspanel --resource-group <RESOURCE_GROUP> --query defaultHostname -o tsv
+az staticwebapp show --name asiaspanel-web2 --resource-group asiaspanel-web2 --query defaultHostname -o tsv
 ```
 
 **Result**: `https://proud-mud-09bc94003.azurestaticapps.net` (or your actual URL)
@@ -39,10 +39,11 @@ az staticwebapp show --name asiaspanel --resource-group <RESOURCE_GROUP> --query
 ```powershell
 # 1. Deploy backend (one command from backend folder)
 cd C:\Users\marku\Documents\2025\93_Project_AI\repos\asiaspanel\backend
-az webapp up --name asiaspanel-backend --runtime PYTHON:3.11 --sku B1 --location eastus
+az webapp up --name asiaspanel-backend --runtime PYTHON:3.11 --sku B1 --location westeurope --resource-group asiaspanel-web2
+
 ```
 
-**Note**: If name taken, try `asiaspanel-backend-yourname`
+**Note**: If name taken, try `asiaspanel-backend-yourname`. The `--resource-group` flag ensures it's created in the same resource group as your frontend.
 
 ```powershell
 # 2. Configure environment variables
@@ -51,6 +52,15 @@ az webapp config appsettings set --name asiaspanel-backend --settings OPENAI_API
 az webapp config appsettings set --name asiaspanel-backend --settings AZURE_STORAGE_CONNECTION_STRING="your-connection-string"
 
 az webapp config appsettings set --name asiaspanel-backend --settings AZURE_TTS_CONTAINER="tts-audio"
+
+# 2b. Set startup command (REQUIRED - tells Azure to use Uvicorn for FastAPI)
+az webapp config set --name asiaspanel-backend --resource-group asiaspanel-web2 --startup-file "python -m uvicorn app:app --host 0.0.0.0 --port 8000"
+
+# 2c. Restart app to apply changes
+az webapp restart --name asiaspanel-backend --resource-group asiaspanel-web2
+
+# check if running
+az webapp log tail --name asiaspanel-backend --resource-group asiaspanel-web2
 
 # 3. Get backend URL
 az webapp show --name asiaspanel-backend --query defaultHostName -o tsv
@@ -66,28 +76,34 @@ az webapp cors add --name asiaspanel-backend --allowed-origins "https://proud-mu
 
 ---
 
-## Part 3: Connect Frontend to Backend
+## Part 3: Connect Frontend to Backend (One-Time Setup)
 
-Edit `asiaspanel-web2/index.html`:
+Edit `asiaspanel-web2/index.html` **once** to auto-detect the environment:
 
 **Find**:
 ```javascript
 const API_BASE = '';
 ```
 
-**Replace with**:
+**Replace with** (auto-detects local vs production):
 ```javascript
+// Auto-detect: production uses Azure backend, local uses localhost
 const API_BASE = window.location.hostname.includes('azurestaticapps.net') 
   ? 'https://asiaspanel-backend.azurewebsites.net' 
   : '';
 ```
 
-**Deploy updated frontend**:
+**Deploy this change once**:
 ```bash
 git add asiaspanel-web2/index.html
-git commit -m "Connect frontend to production backend"
+git commit -m "Add auto-detect for production backend"
 git push origin master
 ```
+
+**How it works:**
+- 🏠 **Local** (`http://localhost:8001`): `API_BASE = ''` → calls same origin
+- ☁️ **Production** (`https://*.azurestaticapps.net`): `API_BASE = 'https://asiaspanel-backend.azurewebsites.net'` → calls Azure backend
+- ✅ **No more manual changes needed** - works everywhere automatically!
 
 ---
 
@@ -121,9 +137,11 @@ git push origin master
 
 Frontend redeploys automatically. Backend redeploy:
 ```powershell
-cd backend
+cd C:\Users\marku\Documents\2025\93_Project_AI\repos\asiaspanel\backend
 az webapp up --name asiaspanel-backend
 ```
+
+**Note**: `az webapp up` detects it's an update and only uploads changed files (much faster than initial deployment).
 
 ---
 
