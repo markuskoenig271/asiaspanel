@@ -30,7 +30,8 @@ git push origin master
 az staticwebapp show --name asiaspanel-web2 --resource-group asiaspanel-web2 --query defaultHostname -o tsv
 ```
 
-**Result**: `https://proud-mud-09bc94003.azurestaticapps.net` (or your actual URL)
+**Result**: `https://proud-mud-09bc94003.3.azurestaticapps.net` (or your actual URL)
+
 
 ---
 
@@ -56,6 +57,9 @@ az webapp config appsettings set --name asiaspanel-backend --settings AZURE_TTS_
 # 2b. Set startup command (REQUIRED - tells Azure to use Uvicorn for FastAPI)
 az webapp config set --name asiaspanel-backend --resource-group asiaspanel-web2 --startup-file "python -m uvicorn app:app --host 0.0.0.0 --port 8000"
 
+# 2b1. Enable CORS
+az webapp cors add --name asiaspanel-backend --resource-group asiaspanel-web2 --allowed-origins "https://proud-mud-09bc94003.3.azurestaticapps.net"
+
 # 2c. Restart app to apply changes
 az webapp restart --name asiaspanel-backend --resource-group asiaspanel-web2
 
@@ -68,8 +72,8 @@ az webapp show --name asiaspanel-backend --query defaultHostName -o tsv
 # 4. Test backend
 curl https://asiaspanel-backend.azurewebsites.net/health
 
-# 5. Enable CORS
-az webapp cors add --name asiaspanel-backend --allowed-origins "https://proud-mud-09bc94003.azurestaticapps.net"
+
+                                                               
 ```
 
 **Replace with your actual Static Web App URL**
@@ -119,14 +123,15 @@ Open production URL and test:
 ---
 
 ## URLs
-
-- **Frontend**: `https://proud-mud-09bc94003.azurestaticapps.net`
+- **Frontend**: `https://proud-mud-09bc94003.3.azurestaticapps.net`
 - **Backend**: `https://asiaspanel-backend.azurewebsites.net`
 - **Cost**: ~$13/month (B1 tier) or Free (F1 tier)
 
 ---
 
 ## Update/Redeploy
+
+### Frontend
 
 ```bash
 # Make changes, then:
@@ -135,10 +140,21 @@ git commit -m "Your update"
 git push origin master
 ```
 
-Frontend redeploys automatically. Backend redeploy:
+Frontend redeploys automatically.
+
+### Backend redeploy:
+
+try shortest change if only code change
+
 ```powershell
-cd C:\Users\marku\Documents\2025\93_Project_AI\repos\asiaspanel\backend
+
 az webapp up --name asiaspanel-backend
+
+
+az webapp config set --name asiaspanel-backend --resource-group asiaspanel-web2 --linux-fx-version "PYTHON|3.11"
+
+cd C:\Users\marku\Documents\2025\93_Project_AI\repos\asiaspanel\backend
+az webapp up --name asiaspanel-backend --runtime PYTHON:3.11
 ```
 
 **Note**: `az webapp up` detects it's an update and only uploads changed files (much faster than initial deployment).

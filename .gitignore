@@ -15,6 +15,10 @@ __pycache__/
 *$py.class
 *.so
 
+# Backend deployment secrets
+backend/.env.production
+backend/.env.local
+
 python_code/README_private.md
 
 # Diagnostic reports (https://nodejs.org/api/report.html)

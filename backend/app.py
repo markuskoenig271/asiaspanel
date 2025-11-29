@@ -268,35 +268,68 @@ async def tts(req: TTSRequest):
 
 @app.get('/api/audio/{name}')
 async def audio_proxy(name: str):
-    """Proxy and stream audio blobs from Azure (or serve local files) under a same-origin URL.
-    This avoids requiring public blob access or SAS tokens for browser playback.
-    """
+    """Proxy and stream audio blobs from Azure (or serve local files) with proper CORS headers."""
     logger.info(f"Audio proxy request for: {name}")
-    # First try Azure blob
+    
+    # First try Azure blob with connection string authentication
     if _blob_service is not None:
         try:
             container_name = os.getenv('AZURE_TTS_CONTAINER', 'tts-audio')
-            logger.info(f"Attempting to fetch from Azure blob: {container_name}/{name}")
+            logger.info(f"Fetching from Azure blob: {container_name}/{name}")
+            
             blob_client = _blob_service.get_blob_client(container=container_name, blob=name)
-            stream = blob_client.download_blob()
-            data = stream.readall()
-            logger.info(f"Successfully fetched blob {name}, size: {len(data)} bytes")
-            return StreamingResponse(io.BytesIO(data), media_type='audio/mpeg')
+            
+            # Check if blob exists first
+            if not blob_client.exists():
+                logger.warning(f"Blob {name} does not exist in container {container_name}")
+                # Don't raise yet, try local fallback
+            else:
+                # Download and stream
+                stream = blob_client.download_blob()
+                data = stream.readall()
+                logger.info(f"Successfully fetched blob {name}, size: {len(data)} bytes")
+                
+                # Determine content type
+                media_type = 'audio/mpeg'  # default
+                if name.endswith('.wav'):
+                    media_type = 'audio/wav'
+                elif name.endswith('.ogg'):
+                    media_type = 'audio/ogg'
+                elif name.endswith('.webm'):
+                    media_type = 'audio/webm'
+                
+                return StreamingResponse(
+                    io.BytesIO(data), 
+                    media_type=media_type,
+                    headers={
+                        'Content-Disposition': f'inline; filename="{name}"',
+                        'Cache-Control': 'public, max-age=3600'
+                    }
+                )
         except Exception as e:
             logger.warning(f"Azure blob fetch failed for {name}: {e}")
             # Fall through to local file fallback
-            pass
 
     # Local file fallback (served from backend/storage)
     local_path = STORAGE_DIR / name
     if local_path.exists():
         logger.info(f"Serving local file: {local_path}")
-        # Attempt to guess content type by extension
-        if local_path.suffix.lower() in ['.mp3']:
-            return FileResponse(local_path, media_type='audio/mpeg')
-        if local_path.suffix.lower() in ['.wav']:
-            return FileResponse(local_path, media_type='audio/wav')
-        return FileResponse(local_path)
+        
+        # Determine media type based on file extension (same as /storage endpoint)
+        media_type = "audio/mpeg"  # default for .mp3
+        if name.endswith('.wav'):
+            media_type = "audio/wav"
+        elif name.endswith('.ogg'):
+            media_type = "audio/ogg"
+        elif name.endswith('.webm'):
+            media_type = "audio/webm"
+        
+        return FileResponse(
+            path=str(local_path),
+            media_type=media_type,
+            filename=name,
+            headers={'Cache-Control': 'public, max-age=3600'}
+        )
 
     logger.error(f"Audio file not found: {name}")
     raise HTTPException(status_code=404, detail='Audio not found')
@@ -392,9 +425,27 @@ async def health():
     return {"status": "ok", "uptime_seconds": uptime, "azure_blob_configured": blob_ok}
 
 
-# Serve storage files for demo purposes under /storage
-if STORAGE_DIR.exists():
-    app.mount("/storage", StaticFiles(directory=str(STORAGE_DIR)), name="storage")
+@app.get("/storage/{filename}")
+async def serve_audio(filename: str):
+    """Serve audio files with proper CORS headers for cross-origin playback."""
+    file_path = STORAGE_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Determine media type based on file extension
+    media_type = "audio/mpeg"  # default for .mp3
+    if filename.endswith('.wav'):
+        media_type = "audio/wav"
+    elif filename.endswith('.ogg'):
+        media_type = "audio/ogg"
+    elif filename.endswith('.webm'):
+        media_type = "audio/webm"
+    
+    return FileResponse(
+        path=str(file_path),
+        media_type=media_type,
+        filename=filename
+    )
 
 # Mount the static frontend so a single server can serve both (mounted after API routes)
 if STATIC_DIR.exists():
