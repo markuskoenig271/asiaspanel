@@ -15,12 +15,23 @@
   <div id="translated"></div>
 
   <h2>Text-to-Speech</h2>
-  <input id="ttsText" value="Hello from Asia's Panel" style="width:60%" />
+  <input id="ttsText" value="Hello from Asia's Panel 2" style="width:60%" />
   <button id="ttsBtn">Generate TTS</button>
+  <button id="replayBtn" disabled>🔁 Replay</button>
   <div id="audioHolder"></div>
+
+  <h2>Voice Recording</h2>
+  <button id="recordBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
+  <div id="recordTimer" style="margin: 10px 0;">Ready</div>
+  <input id="voiceName" placeholder="Voice name (optional)" style="width:40%" />
+  <div id="recordStatus"></div>
+  <div id="recordedAudio"></div>
 
   <script>
     const API_BASE = '';// same origin: served by backend when running uvicorn (http://localhost:8001)
+
+    let lastAudioElement = null;
 
     async function loadVoices() {
       try {
@@ -54,26 +65,238 @@
     });
 
     document.getElementById('ttsBtn').addEventListener('click', async () => {
-      const text = document.getElementById('ttsText').value;
-      const voice = document.getElementById('voiceSelect').value;
-      const res = await fetch(API_BASE + '/api/tts', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({text, voice, format: 'wav'})
-      });
-      const body = await res.json();
+      const btn = document.getElementById('ttsBtn');
       const holder = document.getElementById('audioHolder');
-      holder.innerHTML = '';
-      if (body.url) {
+      holder.innerHTML = 'Generating TTS...';
+      btn.disabled = true;
+      try {
+        const text = document.getElementById('ttsText').value;
+        const voice = document.getElementById('voiceSelect').value;
+        const res = await fetch(API_BASE + '/api/tts', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({text, voice, format: 'wav'})
+        });
+
+        if (!res.ok) {
+          const txt = await res.text();
+          holder.textContent = `TTS request failed: ${res.status} ${res.statusText} - ${txt}`;
+          return;
+        }
+
+        let body;
+        try {
+          body = await res.json();
+        } catch (e) {
+          const txt = await res.text();
+          holder.textContent = `Invalid JSON response from /api/tts: ${txt}`;
+          console.error('Invalid JSON from /api/tts', txt, e);
+          return;
+        }
+
+        // Check if response contains url before accessing it
+        if (!body || !body.url) {
+          console.error('Invalid TTS response:', body);
+          holder.innerHTML = `<p style="color:red;">TTS failed: No audio URL in response. ${body?.error || ''}</p>`;
+          if (body?.openai_error) {
+            holder.innerHTML += `<p style="color:orange;">OpenAI error: ${body.openai_error}</p>`;
+          }
+          if (body?.mock) {
+            holder.innerHTML += `<p style="color:orange;">Note: Using mock/fallback TTS</p>`;
+          }
+          return;
+        }
+
+        holder.innerHTML = '';
         const a = document.createElement('audio');
         a.controls = true;
+        a.preload = 'auto';
+        // For cross-origin audio sources, set crossOrigin so playback/reporting works
+        try { a.crossOrigin = 'anonymous'; } catch(e) {}
         a.src = body.url;
+
+        // Store reference for replay button
+        lastAudioElement = a;
+        document.getElementById('replayBtn').disabled = false;
+
+        // show the audio control
         holder.appendChild(a);
-      } else {
-        holder.textContent = JSON.stringify(body);
+
+        // Try to auto-play (user-initiated click should allow it). If it fails, surface the error and provide a direct link.
+        a.addEventListener('error', (ev) => {
+          console.error('Audio element error', ev, a.error);
+          holder.innerHTML = `<p style="color:red;">Audio playback failed to load resource.</p><p><a href="${body.url}" target="_blank">Open audio in new tab</a></p>`;
+        });
+
+        // Try playing immediately; browsers may block, so catch and show helpful message
+        a.play().then(() => {
+          console.log('Audio started playing');
+        }).catch(err => {
+          console.warn('Auto-play blocked or playback failed:', err);
+          // Keep controls visible so user can press play; also provide direct link
+          const info = document.createElement('div');
+          info.innerHTML = `<p>Audio ready — press play or <a href="${body.url}" target="_blank">open in new tab</a></p>`;
+          holder.appendChild(info);
+        });
+      } catch (err) {
+        console.error('TTS request error', err);
+        holder.innerHTML = `<p style="color:red;">TTS request error: ${err.message}</p>`;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('replayBtn').addEventListener('click', () => {
+      if (lastAudioElement) {
+        lastAudioElement.currentTime = 0;
+        lastAudioElement.play().then(() => {
+          console.log('Replaying audio');
+        }).catch(err => {
+          console.warn('Replay failed:', err);
+          alert('Replay failed. Please check the audio element.');
+        });
       }
     });
 
     loadVoices();
+
+    // Voice recording feature
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let recordingStartTime = 0;
+    let timerInterval = null;
+
+    const recordBtn = document.getElementById('recordBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const recordTimer = document.getElementById('recordTimer');
+    const recordStatus = document.getElementById('recordStatus');
+    const recordedAudio = document.getElementById('recordedAudio');
+    const voiceName = document.getElementById('voiceName');
+
+    recordBtn.addEventListener('click', async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        
+        // Use webm with opus codec if available
+        const options = { mimeType: 'audio/webm;codecs=opus' };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options.mimeType = 'audio/webm';
+        }
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options.mimeType = '';
+        }
+        
+        mediaRecorder = new MediaRecorder(stream, options);
+        audioChunks = [];
+        
+        mediaRecorder.addEventListener('dataavailable', event => {
+          audioChunks.push(event.data);
+        });
+        
+        mediaRecorder.addEventListener('stop', async () => {
+          const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+          
+          // Show preview
+          const audioUrl = URL.createObjectURL(audioBlob);
+          recordedAudio.innerHTML = '<h3>Preview:</h3>';
+          const preview = document.createElement('audio');
+          preview.controls = true;
+          preview.src = audioUrl;
+          recordedAudio.appendChild(preview);
+          
+          // Upload to backend
+          recordStatus.textContent = 'Uploading voice sample...';
+          try {
+            const formData = new FormData();
+            const name = voiceName.value.trim() || 'my_voice';
+            formData.append('file', audioBlob, `${name}.webm`);
+            formData.append('name', name);
+            
+            const res = await fetch(API_BASE + '/api/voice-sample', {
+              method: 'POST',
+              body: formData
+            });
+            
+            if (!res.ok) {
+              throw new Error(`Upload failed: ${res.status} ${res.statusText}`);
+            }
+            
+            const result = await res.json();
+            recordStatus.innerHTML = `<p style="color:green;">✓ Voice sample saved: ${result.voice_id}</p>`;
+            
+            // Reload voices to include the new one
+            await loadVoicesIncludingCustom();
+          } catch (err) {
+            console.error('Upload error', err);
+            recordStatus.innerHTML = `<p style="color:red;">Upload failed: ${err.message}</p>`;
+          }
+          
+          // Stop all tracks
+          stream.getTracks().forEach(track => track.stop());
+        });
+        
+        mediaRecorder.start();
+        recordingStartTime = Date.now();
+        recordBtn.disabled = true;
+        stopBtn.disabled = false;
+        recordStatus.textContent = 'Recording...';
+        
+        // Update timer
+        timerInterval = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+          recordTimer.textContent = `Recording: ${elapsed}s`;
+        }, 1000);
+        
+      } catch (err) {
+        console.error('Microphone access error', err);
+        recordStatus.innerHTML = `<p style="color:red;">Microphone access denied or failed: ${err.message}</p>`;
+      }
+    });
+
+    stopBtn.addEventListener('click', () => {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        stopBtn.disabled = true;
+        recordBtn.disabled = false;
+        clearInterval(timerInterval);
+        recordTimer.textContent = 'Processing...';
+      }
+    });
+
+    async function loadVoicesIncludingCustom() {
+      try {
+        // Load standard voices from config
+        const configRes = await fetch(API_BASE + '/api/config');
+        const cfg = await configRes.json();
+        const standardVoices = cfg.voices || ['default'];
+        
+        // Load custom recorded voices
+        const voicesRes = await fetch(API_BASE + '/api/voices');
+        const voicesData = await voicesRes.json();
+        const customVoices = voicesData.voices || [];
+        
+        const sel = document.getElementById('voiceSelect');
+        sel.innerHTML = '';
+        
+        // Add standard voices
+        standardVoices.forEach(v => {
+          const o = document.createElement('option');
+          o.value = v;
+          o.textContent = v;
+          sel.appendChild(o);
+        });
+        
+        // Add custom voices with marker
+        customVoices.forEach(v => {
+          const o = document.createElement('option');
+          o.value = v.id;
+          o.textContent = `${v.name} (custom)`;
+          sel.appendChild(o);
+        });
+      } catch (e) {
+        console.warn('Failed to load voices, using defaults', e);
+        loadVoices(); // Fallback to original method
+      }
+    }
   </script>
 </body>
 </html>

@@ -7,6 +7,14 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
+# Application generated files
+backend/storage/
+backend/__pycache__/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
 python_code/README_private.md
 
 # Diagnostic reports (https://nodejs.org/api/report.html)

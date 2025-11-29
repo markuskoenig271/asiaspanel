@@ -4,3 +4,5 @@ python-dotenv>=1.0.0
 openai>=0.27.0
 aiofiles>=23.1.0
 gTTS>=2.3.0
+azure-storage-blob>=12.14.0
+python-multipart>=0.0.5

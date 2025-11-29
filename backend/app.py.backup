@@ -1,5 +1,5 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
 import io
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,24 +13,35 @@ import asyncio
 import time
 import logging
 
-# Configure logging to both console and file
-LOGS_DIR = Path(__file__).resolve().parent.parent / 'logs'
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
-log_file = LOGS_DIR / 'log_file.log'
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # Console output
-        logging.FileHandler(log_file, encoding='utf-8')  # File output
-    ]
-)
-logger = logging.getLogger(__name__)
-logger.info(f"Logging to file: {log_file}")
-
 # dotenv & openai (optional)
 from dotenv import load_dotenv
+
+# Configure logging to both console and file
+BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "log_file.log"
+
+# Create formatters and handlers
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(formatter)
+
+# File handler
+file_handler = logging.FileHandler(LOG_FILE)
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(formatter)
+
+# Configure root logger
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[console_handler, file_handler]
+)
+logger = logging.getLogger(__name__)
+logger.info(f"Logging initialized. Log file: {LOG_FILE}")
 try:
     import openai
 except Exception:
@@ -40,8 +51,6 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = (BASE_DIR / ".." / "asiaspanel-web2").resolve()
 STORAGE_DIR = BASE_DIR / "storage"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-VOICES_DIR = STORAGE_DIR / "voices"
-VOICES_DIR.mkdir(parents=True, exist_ok=True)
 
 # server start time for /health
 START_TIME = time.time()
@@ -148,111 +157,35 @@ async def translate(req: TranslateRequest):
 
 @app.post("/api/tts")
 async def tts(req: TTSRequest):
-    """TTS endpoint. Generates audio using OpenAI TTS or gTTS fallback.
-    Uploads to Azure Blob Storage if configured, otherwise serves locally.
+    """Mock TTS endpoint. Returns a small JSON pointer to where audio would be available.
+    In production, this would call an external TTS provider and store the audio blob.
     """
-    logger.info(f"TTS request: text='{req.text[:50]}...', voice={req.voice}, format={req.format}")
-    
     if not req.text:
-        logger.error("TTS request missing text")
         raise HTTPException(status_code=400, detail="text is required")
 
     # Create an MP3 filename for output
     audio_filename = f"tts_{uuid.uuid4().hex}.mp3"
     audio_path = STORAGE_DIR / audio_filename
-    logger.info(f"Audio will be saved to: {audio_path}")
 
     def _return_uploaded(path: Path):
-        logger.info(f"Attempting to upload/return audio: {path.name}")
         if _blob_service is not None:
             try:
                 container_name = os.getenv('AZURE_TTS_CONTAINER', 'tts-audio')
-                logger.info(f"Uploading to Azure blob container: {container_name}")
                 try:
                     _blob_service.create_container(container_name)
-                    logger.info(f"Container {container_name} created or already exists")
-                except Exception as ce:
-                    logger.info(f"Container creation skipped: {ce}")
+                except Exception:
                     pass
                 blob_client = _blob_service.get_blob_client(container=container_name, blob=path.name)
                 with open(path, 'rb') as data:
                     blob_client.upload_blob(data, overwrite=True)
+                # Return a same-origin proxied URL so browsers can play audio even when
+                # the storage account disallows public access. The proxy endpoint
+                # streams the blob from Azure on demand.
                 proxied = f"/api/audio/{path.name}"
-                logger.info(f"Audio uploaded to Azure, returning proxied URL: {proxied}")
                 return {"url": proxied, "mock": False, "storage": "azure", "blob_url": blob_client.url}
             except Exception as e:
-                logger.error(f"Azure blob upload failed: {e}", exc_info=True)
                 return {"url": f"/storage/{path.name}", "mock": False, "error": str(e)}
-        logger.info(f"No Azure blob configured, returning local storage URL")
         return {"url": f"/storage/{path.name}", "mock": False}
-    
-    openai_error = None
-
-    # Try OpenAI TTS if configured
-    if OPENAI_API_KEY and openai is not None:
-        logger.info("Attempting OpenAI TTS generation")
-        try:
-            audio_bytes = None
-            # Newer client style: openai.OpenAI()
-            if hasattr(openai, 'OpenAI'):
-                try:
-                    client = openai.OpenAI()
-                    if hasattr(client, 'audio') and hasattr(client.audio, 'speech'):
-                        model = os.getenv('OPENAI_TTS_MODEL', 'tts-1')
-                        logger.info(f"Using OpenAI TTS model: {model}, voice: {req.voice or 'alloy'}")
-                        resp = client.audio.speech.create(model=model, voice=req.voice or 'alloy', input=req.text)
-                        audio_bytes = resp
-                        logger.info("OpenAI TTS response received")
-                except Exception as e:
-                    logger.warning(f"OpenAI new client TTS failed: {e}")
-                    audio_bytes = None
-
-            # If we got bytes-like data or a file-like object, write to disk
-            if audio_bytes is not None:
-                logger.info(f"Processing OpenAI audio bytes, type: {type(audio_bytes)}")
-                if isinstance(audio_bytes, (bytes, bytearray)):
-                    audio_path.write_bytes(audio_bytes)
-                    logger.info(f"OpenAI audio written to {audio_path}")
-                    return _return_uploaded(audio_path)
-                else:
-                    try:
-                        data = audio_bytes.read()
-                        if isinstance(data, (bytes, bytearray)):
-                            audio_path.write_bytes(data)
-                            logger.info(f"OpenAI audio (from stream) written to {audio_path}")
-                            return _return_uploaded(audio_path)
-                    except Exception as read_err:
-                        logger.warning(f"Could not read OpenAI audio bytes: {read_err}")
-                        pass
-        except Exception as e:
-            openai_error = str(e)
-            logger.error(f"OpenAI TTS error: {openai_error}", exc_info=True)
-    else:
-        logger.info("OpenAI not configured or not available, skipping OpenAI TTS")
-
-    # Fallback to gTTS (local) for creating mp3 audio
-    logger.info("Attempting gTTS fallback")
-    try:
-        from gtts import gTTS
-        tts_obj = gTTS(text=req.text, lang=os.getenv('TTS_LANG', 'en'))
-        tts_obj.save(str(audio_path))
-        logger.info(f"gTTS audio saved to {audio_path}")
-        result = _return_uploaded(audio_path)
-        if openai_error:
-            result['openai_error'] = openai_error
-        logger.info(f"Returning gTTS result: {result}")
-        return result
-    except Exception as e:
-        logger.error(f"gTTS fallback failed: {e}", exc_info=True)
-        # Last resort: write a text placeholder and return local path
-        placeholder_name = f"tts_{uuid.uuid4().hex}.txt"
-        placeholder_path = STORAGE_DIR / placeholder_name
-        placeholder_path.write_text(f"TTS fallback placeholder for voice={req.voice}, format={req.format}\n\n{req.text}")
-        resp = {"url": f"/storage/{placeholder_path.name}", "mock": True, "error": str(e)}
-        if openai_error:
-            resp['openai_error'] = openai_error
-        logger.warning(f"Returning placeholder response: {resp}")
-        return resp
 
 
 @app.get('/api/audio/{name}')
@@ -260,26 +193,21 @@ async def audio_proxy(name: str):
     """Proxy and stream audio blobs from Azure (or serve local files) under a same-origin URL.
     This avoids requiring public blob access or SAS tokens for browser playback.
     """
-    logger.info(f"Audio proxy request for: {name}")
     # First try Azure blob
     if _blob_service is not None:
         try:
             container_name = os.getenv('AZURE_TTS_CONTAINER', 'tts-audio')
-            logger.info(f"Attempting to fetch from Azure blob: {container_name}/{name}")
             blob_client = _blob_service.get_blob_client(container=container_name, blob=name)
             stream = blob_client.download_blob()
             data = stream.readall()
-            logger.info(f"Successfully fetched blob {name}, size: {len(data)} bytes")
             return StreamingResponse(io.BytesIO(data), media_type='audio/mpeg')
         except Exception as e:
-            logger.warning(f"Azure blob fetch failed for {name}: {e}")
             # Fall through to local file fallback
             pass
 
     # Local file fallback (served from backend/storage)
     local_path = STORAGE_DIR / name
     if local_path.exists():
-        logger.info(f"Serving local file: {local_path}")
         # Attempt to guess content type by extension
         if local_path.suffix.lower() in ['.mp3']:
             return FileResponse(local_path, media_type='audio/mpeg')
@@ -287,75 +215,69 @@ async def audio_proxy(name: str):
             return FileResponse(local_path, media_type='audio/wav')
         return FileResponse(local_path)
 
-    logger.error(f"Audio file not found: {name}")
     raise HTTPException(status_code=404, detail='Audio not found')
 
+    openai_error = None
 
-@app.post("/api/voice-sample")
-async def upload_voice_sample(file: UploadFile = File(...), name: str = ""):
-    """Upload a voice sample for later use with TTS voice cloning."""
+    # Try OpenAI TTS if configured
+    if OPENAI_API_KEY and openai is not None:
+        try:
+            audio_bytes = None
+            # Newer client style: openai.OpenAI()
+            if hasattr(openai, 'OpenAI'):
+                try:
+                    client = openai.OpenAI()
+                    if hasattr(client, 'audio') and hasattr(client.audio, 'speech'):
+                        model = os.getenv('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
+                        resp = client.audio.speech.create(model=model, voice=req.voice or 'alloy', input=req.text)
+                        audio_bytes = resp
+                except Exception:
+                    audio_bytes = None
+
+            # Fallback older module-level API
+            if audio_bytes is None and hasattr(openai, 'audio'):
+                try:
+                    model = os.getenv('OPENAI_TTS_MODEL', 'gpt-4o-mini-tts')
+                    resp = openai.audio.speech.create(model=model, voice=req.voice or 'alloy', input=req.text)
+                    audio_bytes = resp
+                except Exception:
+                    audio_bytes = None
+
+            # If we got bytes-like data or a file-like object, write to disk
+            if audio_bytes is not None:
+                if isinstance(audio_bytes, (bytes, bytearray)):
+                    audio_path.write_bytes(audio_bytes)
+                    return _return_uploaded(audio_path)
+                else:
+                    try:
+                        data = audio_bytes.read()
+                        if isinstance(data, (bytes, bytearray)):
+                            audio_path.write_bytes(data)
+                            return _return_uploaded(audio_path)
+                    except Exception:
+                        # Not file-like; continue to fallback
+                        pass
+        except Exception as e:
+            openai_error = str(e)
+
+    # Fallback to gTTS (local) for creating mp3 audio
     try:
-        logger.info(f"Received voice sample upload: name={name}, filename={file.filename}, content_type={file.content_type}")
-        
-        # Validate name
-        if not name or not name.strip():
-            name = file.filename.rsplit('.', 1)[0] if file.filename else f"voice_{int(time.time())}"
-        
-        # Determine file extension
-        ext = '.webm'
-        if file.content_type:
-            if 'wav' in file.content_type.lower():
-                ext = '.wav'
-            elif 'mp3' in file.content_type.lower():
-                ext = '.mp3'
-            elif 'ogg' in file.content_type.lower():
-                ext = '.ogg'
-        elif file.filename:
-            file_ext = file.filename.rsplit('.', 1)[-1] if '.' in file.filename else ''
-            if file_ext.lower() in ['wav', 'mp3', 'ogg', 'webm']:
-                ext = f'.{file_ext.lower()}'
-        
-        # Generate unique voice ID
-        voice_id = f"{name.strip().replace(' ', '_')}_{int(time.time())}"
-        file_path = VOICES_DIR / f"{voice_id}{ext}"
-        
-        # Save the file
-        content = await file.read()
-        file_path.write_bytes(content)
-        logger.info(f"Saved voice sample to {file_path} ({len(content)} bytes)")
-        
-        return {
-            "ok": True,
-            "voice_id": voice_id,
-            "name": name,
-            "path": str(file_path),
-            "size_bytes": len(content)
-        }
+        from gtts import gTTS
+        tts = gTTS(text=req.text, lang=os.getenv('TTS_LANG', 'en'))
+        tts.save(str(audio_path))
+        result = _return_uploaded(audio_path)
+        if openai_error:
+            result['openai_error'] = openai_error
+        return result
     except Exception as e:
-        logger.error(f"Failed to upload voice sample: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@app.get("/api/voices")
-async def list_voices():
-    """List all available voice samples."""
-    try:
-        voices = []
-        if VOICES_DIR.exists():
-            for voice_file in VOICES_DIR.iterdir():
-                if voice_file.is_file():
-                    voices.append({
-                        "id": voice_file.stem,
-                        "name": voice_file.stem.rsplit('_', 1)[0],
-                        "format": voice_file.suffix[1:],
-                        "size_bytes": voice_file.stat().st_size,
-                        "created": voice_file.stat().st_ctime
-                    })
-        logger.info(f"Listed {len(voices)} voice samples")
-        return {"voices": voices}
-    except Exception as e:
-        logger.error(f"Failed to list voices: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list voices: {str(e)}")
+        # Last resort: write a text placeholder and return local path
+        placeholder_name = f"tts_{uuid.uuid4().hex}.txt"
+        placeholder_path = STORAGE_DIR / placeholder_name
+        placeholder_path.write_text(f"TTS fallback placeholder for voice={req.voice}, format={req.format}\n\n{req.text}")
+        resp = {"url": f"/storage/{placeholder_path.name}", "mock": True, "error": str(e)}
+        if openai_error:
+            resp['openai_error'] = openai_error
+        return resp
 
 
 @app.get("/api/config")
@@ -364,10 +286,9 @@ async def get_config():
     if not cfg_file.exists():
         return {"voices": ["default", "female_1", "male_1"], "settings": {}}
     return json.loads(cfg_file.read_text())
-
-
 @app.post("/api/config")
 async def save_config(payload: dict):
+
     cfg_file = STORAGE_DIR / "config.json"
     cfg_file.write_text(json.dumps(payload, indent=2))
     return {"ok": True}
