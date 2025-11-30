@@ -2,31 +2,184 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Asia's Panel Updated</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Asia's Panel</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+      color: #333;
+    }
+    
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      padding: 20px;
+    }
+    
+    h1 {
+      text-align: center;
+      color: #667eea;
+      margin-bottom: 10px;
+      font-size: 1.8em;
+    }
+    
+    h2 {
+      color: #667eea;
+      margin-top: 24px;
+      margin-bottom: 12px;
+      font-size: 1.2em;
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 8px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 600;
+      color: #555;
+    }
+    
+    select, input[type="text"], textarea {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-size: 16px;
+      margin-bottom: 12px;
+      transition: border-color 0.3s;
+    }
+    
+    select:focus, input:focus, textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    button {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    
+    button:hover:not(:disabled) {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+    
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    button:active:not(:disabled) {
+      transform: translateY(0);
+    }
+    
+    #translated, #audioHolder, #recordStatus, #recordedAudio {
+      margin-top: 12px;
+      padding: 12px;
+      background: #f5f5f5;
+      border-radius: 8px;
+      min-height: 20px;
+    }
+    
+    #recordTimer {
+      margin: 12px 0;
+      padding: 8px;
+      background: #f0f0f0;
+      border-radius: 8px;
+      text-align: center;
+      font-weight: 600;
+    }
+    
+    audio {
+      width: 100%;
+      margin-top: 8px;
+    }
+    
+    .button-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    
+    @media (max-width: 480px) {
+      body {
+        padding: 10px;
+      }
+      
+      .container {
+        padding: 15px;
+      }
+      
+      h1 {
+        font-size: 1.5em;
+      }
+      
+      h2 {
+        font-size: 1.1em;
+      }
+      
+      button {
+        padding: 10px 16px;
+        font-size: 14px;
+      }
+    }
+  </style>
 </head>
 <body>
-  <h1>Asia's Panel Updated</h1>
-  <p>Select a voice:</p>
-  <select id="voiceSelect"></select>
+  <div class="container">
+    <h1>🎤 Asia's Panel</h1>
+    
+    <div>
+      <label for="voiceSelect">Select a voice:</label>
+      <select id="voiceSelect"></select>
+    </div>
 
-  <h2>Translate</h2>
-  <textarea id="inputText" rows="4" cols="60">Hello world</textarea><br>
-  <button id="translateBtn">Translate</button>
-  <div id="translated"></div>
+    <h2>📝 Translate</h2>
+    <textarea id="inputText" rows="4" placeholder="Enter text to translate...">Hello world</textarea>
+    <button id="translateBtn">Translate</button>
+    <div id="translated"></div>
 
-  <h2>Text-to-Speech</h2>
-  <input id="ttsText" value="Hello from Asia's Panel 2" style="width:60%" />
-  <button id="ttsBtn">Generate TTS</button>
-  <button id="replayBtn" disabled>🔁 Replay</button>
-  <div id="audioHolder"></div>
+    <h2>🔊 Text-to-Speech</h2>
+    <input id="ttsText" type="text" placeholder="Enter text to speak..." value="Hello from Asia's Panel" />
+    <div class="button-group">
+      <button id="ttsBtn">Generate TTS</button>
+      <button id="replayBtn" disabled>🔁 Replay</button>
+    </div>
+    <div id="audioHolder"></div>
 
-  <h2>Voice Recording</h2>
-  <button id="recordBtn">Start Recording</button>
-  <button id="stopBtn" disabled>Stop Recording</button>
-  <div id="recordTimer" style="margin: 10px 0;">Ready</div>
-  <input id="voiceName" placeholder="Voice name (optional)" style="width:40%" />
-  <div id="recordStatus"></div>
-  <div id="recordedAudio"></div>
+    <h2>🎙️ Voice Recording</h2>
+    <div class="button-group">
+      <button id="recordBtn">Start Recording</button>
+      <button id="stopBtn" disabled>Stop Recording</button>
+    </div>
+    <div id="recordTimer">Ready</div>
+    <input id="voiceName" type="text" placeholder="Voice name (optional)" />
+    <div id="recordStatus"></div>
+    <div id="recordedAudio"></div>
+  </div>
 
   <script>
     // Auto-detect: production uses Azure backend, local uses localhost
