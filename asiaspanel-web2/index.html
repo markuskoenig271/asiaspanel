@@ -149,8 +149,33 @@
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- Login Screen -->
+  <div id="loginScreen" class="container" style="max-width: 400px; margin-top: 50px;">
+    <h1>🔐 Asia's Panel</h1>
+    <h2 style="text-align: center; border: none; margin-top: 10px;">Login</h2>
+    <div style="margin-top: 24px;">
+      <label for="passwordInput">Password:</label>
+      <input type="password" id="passwordInput" placeholder="Enter password" style="width: 100%;">
+      <button id="loginBtn" style="width: 100%; margin-top: 12px;">Login</button>
+      <div id="loginError" style="color: #e74c3c; margin-top: 12px; text-align: center;"></div>
+    </div>
+  </div>
+
+  <!-- Main App (Hidden until authenticated) -->
+  <div id="mainApp" class="container" style="display: none;">
+    <div style="text-align: right; margin-bottom: 10px;">
+      <button id="logoutBtn" style="padding: 8px 16px; font-size: 14px;">🚪 Logout</button>
+    </div>
+    
     <h1>🎤 Asia's Panel</h1>
+    
+    <div>
+      <label for="languageSelect">Language / Sprache:</label>
+      <select id="languageSelect">
+        <option value="en">🇬🇧 English</option>
+        <option value="de">🇩🇪 Deutsch</option>
+      </select>
+    </div>
     
     <div>
       <label for="voiceSelect">Select a voice:</label>
@@ -171,6 +196,10 @@
     <div id="audioHolder"></div>
 
     <h2>🎙️ Voice Recording</h2>
+    <p style="background: #fff3cd; padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 14px;">
+      <strong>📖 Sample Text (Read this for 30-60 seconds):</strong><br>
+      <span id="sampleText"></span>
+    </p>
     <div class="button-group">
       <button id="recordBtn">Start Recording</button>
       <button id="stopBtn" disabled>Stop Recording</button>
@@ -179,24 +208,161 @@
     <input id="voiceName" type="text" placeholder="Voice name (optional)" />
     <div id="recordStatus"></div>
     <div id="recordedAudio"></div>
-  </div>
+    
+    <h2>🗑️ Manage Cloned Voices</h2>
+    <button id="manageVoicesBtn">Show/Delete Cloned Voices</button>
+    <div id="voicesList" style="display:none; margin-top:12px;"></div>
+  </div> <!-- End of mainApp -->
 
   <script>
+    // ============ Authentication ============
+    let authToken = null;
+    
     // Auto-detect: production uses Azure backend, local uses localhost
     const API_BASE = window.location.hostname.includes('azurestaticapps.net') 
       ? 'https://asiaspanel-backend.azurewebsites.net' 
       : '';
 
+    // Get auth headers
+    function getAuthHeaders() {
+      return authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
+    }
+
+    // Check authentication on page load
+    window.addEventListener('DOMContentLoaded', async () => {
+      authToken = sessionStorage.getItem('authToken');
+      
+      if (authToken) {
+        // Verify token is still valid
+        const isValid = await verifyToken();
+        if (isValid) {
+          showMainApp();
+          return;
+        }
+      }
+      
+      // Show login screen
+      showLoginScreen();
+    });
+
+    async function verifyToken() {
+      try {
+        const response = await fetch(`${API_BASE}/api/voices`, {
+          headers: getAuthHeaders()
+        });
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    function showLoginScreen() {
+      document.getElementById('loginScreen').style.display = 'block';
+      document.getElementById('mainApp').style.display = 'none';
+      document.getElementById('passwordInput').focus();
+    }
+
+    function showMainApp() {
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('mainApp').style.display = 'block';
+      loadVoices();
+    }
+
+    // Login handler
+    document.getElementById('loginBtn').addEventListener('click', handleLogin);
+    document.getElementById('passwordInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') handleLogin();
+    });
+
+    async function handleLogin() {
+      const password = document.getElementById('passwordInput').value;
+      const errorDiv = document.getElementById('loginError');
+      const loginBtn = document.getElementById('loginBtn');
+      
+      if (!password) {
+        errorDiv.textContent = 'Please enter a password';
+        return;
+      }
+      
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Logging in...';
+      errorDiv.textContent = '';
+      
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        
+        if (!response.ok) {
+          const error = await response.json();
+          errorDiv.textContent = error.detail || 'Login failed';
+          return;
+        }
+        
+        const data = await response.json();
+        authToken = data.token;
+        sessionStorage.setItem('authToken', authToken);
+        
+        showMainApp();
+      } catch (error) {
+        errorDiv.textContent = 'Login failed: ' + error.message;
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Login';
+      }
+    }
+
+    // Logout handler
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try {
+        await fetch(`${API_BASE}/api/auth/logout`, {
+          method: 'POST',
+          headers: getAuthHeaders()
+        });
+      } catch (error) {
+        console.error('Logout error:', error);
+      }
+      
+      authToken = null;
+      sessionStorage.removeItem('authToken');
+      document.getElementById('passwordInput').value = '';
+      showLoginScreen();
+    });
+
+    // ============ Main App Logic ============
+    
+    // Sample texts for voice cloning
+    const sampleTexts = {
+      en: "Hello, my name is Asia. I love exploring new technologies and creating innovative solutions. Today is a beautiful day, and I'm excited to share my voice with you. Technology has transformed our world in countless ways, making communication easier and more accessible than ever before. Whether it's through text, speech, or video, we can now connect with people across the globe instantly. I believe in the power of artificial intelligence to enhance our daily lives. From virtual assistants to advanced translation tools, these innovations help us work smarter and collaborate better. Voice technology, in particular, has opened up amazing possibilities for accessibility and natural interaction with devices.",
+      de: "Hallo, mein Name ist Asia. Ich liebe es, neue Technologien zu erkunden und innovative Lösungen zu entwickeln. Heute ist ein wunderschöner Tag, und ich freue mich, meine Stimme mit Ihnen zu teilen. Technologie hat unsere Welt auf unzählige Arten verändert und die Kommunikation einfacher und zugänglicher gemacht als je zuvor. Ob durch Text, Sprache oder Video – wir können jetzt sofort mit Menschen auf der ganzen Welt in Verbindung treten. Ich glaube an die Kraft der künstlichen Intelligenz, unser tägliches Leben zu verbessern. Von virtuellen Assistenten bis hin zu fortschrittlichen Übersetzungstools helfen uns diese Innovationen, intelligenter zu arbeiten und besser zusammenzuarbeiten. Sprachtechnologie hat insbesondere erstaunliche Möglichkeiten für Barrierefreiheit und natürliche Interaktion mit Geräten eröffnet."
+    };
+
     let lastAudioElement = null;
+    let currentLanguage = 'en';
+    
+    // Update sample text when language changes
+    document.getElementById('languageSelect').addEventListener('change', (e) => {
+      currentLanguage = e.target.value;
+      document.getElementById('sampleText').textContent = sampleTexts[currentLanguage];
+    });
+    
+    // Initialize sample text
+    document.getElementById('sampleText').textContent = sampleTexts['en'];
 
     async function loadVoices() {
       try {
         // Load config voices
-        const res = await fetch(API_BASE + '/api/config');
+        const res = await fetch(API_BASE + '/api/config', {
+          headers: getAuthHeaders()
+        });
         const cfg = await res.json();
         
         // Load cloned voices
-        const clonedRes = await fetch(API_BASE + '/api/cloned-voices');
+        const clonedRes = await fetch(API_BASE + '/api/cloned-voices', {
+          headers: getAuthHeaders()
+        });
         const clonedData = await clonedRes.json();
         
         const sel = document.getElementById('voiceSelect');
@@ -249,7 +415,8 @@
       const text = document.getElementById('inputText').value;
       const target = 'en';
       const res = await fetch(API_BASE + '/api/translate', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
         body: JSON.stringify({text, target})
       });
       const body = await res.json();
@@ -265,7 +432,8 @@
         const text = document.getElementById('ttsText').value;
         const voice = document.getElementById('voiceSelect').value;
         const res = await fetch(API_BASE + '/api/tts', {
-          method: 'POST', headers: {'Content-Type':'application/json'},
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...getAuthHeaders() },
           body: JSON.stringify({text, voice, format: 'wav'})
         });
 
@@ -405,6 +573,7 @@
             
             const res = await fetch(API_BASE + '/api/voice-sample', {
               method: 'POST',
+              headers: getAuthHeaders(),
               body: formData
             });
             
@@ -428,7 +597,8 @@
               
               try {
                 const cloneRes = await fetch(`${API_BASE}/api/clone-voice?voice_id=${result.voice_id}&name=${encodeURIComponent(voiceName)}`, {
-                  method: 'POST'
+                  method: 'POST',
+                  headers: getAuthHeaders()
                 });
                 
                 if (!cloneRes.ok) {
@@ -451,8 +621,6 @@
             
             recordStatus.appendChild(cloneBtn);
             
-            // Reload voices to include the new one
-            await loadVoicesIncludingCustom();
           } catch (err) {
             console.error('Upload error', err);
             recordStatus.innerHTML = `<p style="color:red;">Upload failed: ${err.message}</p>`;
@@ -490,41 +658,73 @@
       }
     });
 
-    async function loadVoicesIncludingCustom() {
-      try {
-        // Load standard voices from config
-        const configRes = await fetch(API_BASE + '/api/config');
-        const cfg = await configRes.json();
-        const standardVoices = cfg.voices || ['default'];
-        
-        // Load custom recorded voices
-        const voicesRes = await fetch(API_BASE + '/api/voices');
-        const voicesData = await voicesRes.json();
-        const customVoices = voicesData.voices || [];
-        
-        const sel = document.getElementById('voiceSelect');
-        sel.innerHTML = '';
-        
-        // Add standard voices
-        standardVoices.forEach(v => {
-          const o = document.createElement('option');
-          o.value = v;
-          o.textContent = v;
-          sel.appendChild(o);
-        });
-        
-        // Add custom voices with marker
-        customVoices.forEach(v => {
-          const o = document.createElement('option');
-          o.value = v.id;
-          o.textContent = `${v.name} (custom)`;
-          sel.appendChild(o);
-        });
-      } catch (e) {
-        console.warn('Failed to load voices, using defaults', e);
-        loadVoices(); // Fallback to original method
+    // Manage cloned voices
+    document.getElementById('manageVoicesBtn').addEventListener('click', async () => {
+      const voicesList = document.getElementById('voicesList');
+      
+      if (voicesList.style.display === 'none') {
+        // Show voices list
+        try {
+          const res = await fetch(API_BASE + '/api/cloned-voices', {
+            headers: getAuthHeaders()
+          });
+          const data = await res.json();
+          
+          if (!data.cloned_voices || data.cloned_voices.length === 0) {
+            voicesList.innerHTML = '<p style="color:#888;">No cloned voices yet.</p>';
+          } else {
+            voicesList.innerHTML = '<div style="display:flex; flex-direction:column; gap:8px;">' +
+              data.cloned_voices.map(voice => `
+                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px; background:#f5f5f5; border-radius:8px;">
+                  <span><strong>${voice.name}</strong> <small style="color:#888;">(${voice.id})</small></span>
+                  <button onclick="deleteVoice('${voice.id}')" style="background:#dc3545; padding:6px 12px; margin:0;">🗑️ Delete</button>
+                </div>
+              `).join('') +
+              '</div>';
+          }
+          
+          voicesList.style.display = 'block';
+          document.getElementById('manageVoicesBtn').textContent = 'Hide Cloned Voices';
+        } catch (err) {
+          console.error('Failed to load voices:', err);
+          voicesList.innerHTML = '<p style="color:red;">Failed to load voices.</p>';
+          voicesList.style.display = 'block';
+        }
+      } else {
+        // Hide voices list
+        voicesList.style.display = 'none';
+        document.getElementById('manageVoicesBtn').textContent = 'Show/Delete Cloned Voices';
       }
-    }
+    });
+
+    // Delete voice function (global so onclick can call it)
+    window.deleteVoice = async function(voiceId) {
+      if (!confirm(`Are you sure you want to delete voice "${voiceId}"?`)) {
+        return;
+      }
+      
+      try {
+        const res = await fetch(`${API_BASE}/api/delete-cloned-voice?voice_id=${voiceId}`, {
+          method: 'DELETE',
+          headers: getAuthHeaders()
+        });
+        
+        if (!res.ok) {
+          throw new Error('Delete failed');
+        }
+        
+        alert('✅ Voice deleted successfully!');
+        
+        // Refresh voices list and dropdown
+        document.getElementById('manageVoicesBtn').click(); // Close
+        await loadVoices(); // Refresh dropdown
+        document.getElementById('manageVoicesBtn').click(); // Reopen to show updated list
+        
+      } catch (err) {
+        alert(`❌ Failed to delete voice: ${err.message}`);
+      }
+    };
+
   </script>
 </body>
 </html>

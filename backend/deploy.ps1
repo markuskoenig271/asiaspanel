@@ -8,6 +8,12 @@ if (!(Test-Path "app.py")) {
     exit 1
 }
 
+# Check for .pw file
+if (!(Test-Path ".pw")) {
+    Write-Host "Warning: .pw file not found - authentication will be disabled in production!" -ForegroundColor Yellow
+    Write-Host "  Create .pw file with your password: echo 'your_password' > .pw" -ForegroundColor Gray
+}
+
 # Auto-load .env.production if it exists and variables not already set
 if ((Test-Path ".env.production") -and (!$env:OPENAI_API_KEY -or !$env:AZURE_STORAGE_CONNECTION_STRING -or !$env:ELEVENLABS_API_KEY)) {
     Write-Host "Loading environment variables from .env.production..." -ForegroundColor Yellow

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 import io
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +13,7 @@ import asyncio
 import time
 import logging
 import requests
+import secrets
 
 # Configure logging to both console and file
 # For Azure: only log to console (Azure captures stdout)
@@ -69,6 +70,17 @@ if OPENAI_API_KEY and openai is not None:
 # ElevenLabs API key for voice cloning
 ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 
+# Load master password from .pw file
+PW_FILE = BASE_DIR / '.pw'
+MASTER_PASSWORD = None
+VALID_TOKENS = set()  # In-memory token storage
+
+if PW_FILE.exists():
+    MASTER_PASSWORD = PW_FILE.read_text().strip()
+    logger.info(f"Authentication enabled - password loaded from {PW_FILE}")
+else:
+    logger.warning("No .pw file found - authentication disabled!")
+
 # Azure Storage connection string (optional). If set, we'll upload TTS to blob storage.
 AZURE_CONN = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
 _blob_service = None
@@ -90,7 +102,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Authentication dependency
+async def verify_auth(authorization: Optional[str] = Header(None)):
+    """Verify authentication token. Skip if no master password is set."""
+    if not MASTER_PASSWORD:
+        return True  # Auth disabled
+    
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    
+    token = authorization.replace("Bearer ", "")
+    if token not in VALID_TOKENS:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    
+    return True
+
 # Note: static files are mounted after API routes to avoid shadowing API endpoints.
+
+
+class AuthRequest(BaseModel):
+    password: str
 
 
 class TranslateRequest(BaseModel):
@@ -105,7 +139,40 @@ class TTSRequest(BaseModel):
     format: Optional[str] = "wav"
 
 
-@app.post("/api/translate")
+# ============ Authentication Endpoints (No Auth Required) ============
+
+@app.post("/api/auth/login")
+async def login(req: AuthRequest):
+    """Login with master password and receive session token."""
+    if not MASTER_PASSWORD:
+        raise HTTPException(status_code=500, detail="Authentication not configured")
+    
+    if req.password != MASTER_PASSWORD:
+        logger.warning("Failed login attempt")
+        raise HTTPException(status_code=401, detail="Invalid password")
+    
+    # Generate secure token
+    token = secrets.token_urlsafe(32)
+    VALID_TOKENS.add(token)
+    
+    logger.info(f"Successful login - Active sessions: {len(VALID_TOKENS)}")
+    return {"token": token, "message": "Login successful"}
+
+
+@app.post("/api/auth/logout")
+async def logout(authorization: Optional[str] = Header(None)):
+    """Logout and invalidate token."""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.replace("Bearer ", "")
+        VALID_TOKENS.discard(token)
+        logger.info(f"User logged out - Active sessions: {len(VALID_TOKENS)}")
+    
+    return {"message": "Logged out successfully"}
+
+
+# ============ Protected API Endpoints ============
+
+@app.post("/api/translate", dependencies=[Depends(verify_auth)])
 async def translate(req: TranslateRequest):
     """Mock translation endpoint. If OPENAI_API_KEY is set, this is a stub that still returns a mock response
     so local testing doesn't require a live OpenAI key. Replace the body with a real OpenAI call later.
@@ -161,7 +228,7 @@ async def translate(req: TranslateRequest):
     return {"translated": translated, "target": req.target, "mock": True}
 
 
-@app.post("/api/tts")
+@app.post("/api/tts", dependencies=[Depends(verify_auth)])
 async def tts(req: TTSRequest):
     """TTS endpoint. Generates audio using OpenAI TTS or gTTS fallback.
     Uploads to Azure Blob Storage if configured, otherwise serves locally.
@@ -226,8 +293,10 @@ async def tts(req: TTSRequest):
                         "text": req.text,
                         "model_id": "eleven_multilingual_v2",
                         "voice_settings": {
-                            "stability": 0.5,
-                            "similarity_boost": 0.75
+                            "stability": 0.5,           # 0-1: Lower = more expressive/variable, Higher = more stable/consistent
+                            "similarity_boost": 0.85,   # 0-1: Higher = closer to your voice sample (try 0.75-0.95)
+                            "style": 0.0,               # 0-1: Speaker style strength (0 = neutral)
+                            "use_speaker_boost": True   # Enhances similarity to original voice
                         }
                     }
                     
@@ -432,7 +501,7 @@ async def upload_voice_sample(file: UploadFile = File(...), name: str = ""):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
-@app.get("/api/voices")
+@app.get("/api/voices", dependencies=[Depends(verify_auth)])
 async def list_voices():
     """List all available voice samples."""
     try:
@@ -454,7 +523,7 @@ async def list_voices():
         raise HTTPException(status_code=500, detail=f"Failed to list voices: {str(e)}")
 
 
-@app.post("/api/clone-voice")
+@app.post("/api/clone-voice", dependencies=[Depends(verify_auth)])
 async def clone_voice(voice_id: str, name: str = ""):
     """Clone a voice using ElevenLabs API from uploaded voice sample."""
     if not ELEVENLABS_API_KEY:
@@ -491,7 +560,24 @@ async def clone_voice(voice_id: str, name: str = ""):
                 data=data,
                 timeout=60
             )
-            response.raise_for_status()
+            
+            # Log the error details
+            if not response.ok:
+                error_detail = response.text
+                logger.error(f"ElevenLabs API error {response.status_code}: {error_detail}")
+                
+                # Parse common errors
+                if response.status_code == 400:
+                    if "too short" in error_detail.lower() or "duration" in error_detail.lower():
+                        raise HTTPException(status_code=400, detail="Audio too short. Please record at least 30 seconds.")
+                    elif "limit" in error_detail.lower() or "quota" in error_detail.lower():
+                        raise HTTPException(status_code=400, detail="Voice cloning limit reached. Delete old voices first.")
+                    elif "format" in error_detail.lower():
+                        raise HTTPException(status_code=400, detail="Audio format not supported. Try recording again.")
+                    else:
+                        raise HTTPException(status_code=400, detail=f"ElevenLabs error: {error_detail}")
+                
+                response.raise_for_status()
         
         result = response.json()
         elevenlabs_voice_id = result["voice_id"]
@@ -531,132 +617,150 @@ async def clone_voice(voice_id: str, name: str = ""):
         raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
 
 
-@app.get("/api/cloned-voices")
+@app.get("/api/cloned-voices", dependencies=[Depends(verify_auth)])
 async def get_cloned_voices():
-    """Return list of cloned voices."""
-    config_file = STORAGE_DIR / "config.json"
-    if not config_file.exists():
-        return {"cloned_voices": []}
-    
-    config = json.loads(config_file.read_text())
-    cloned_voices = config.get("cloned_voices", {})
-    
-    # Format for frontend
-    voices = [
-        {
-            "id": voice_id,
-            "name": data["name"],
-            "elevenlabs_id": data["elevenlabs_id"],
-            "created_at": data.get("created_at", "")
-        }
-        for voice_id, data in cloned_voices.items()
-    ]
-    
-    return {"cloned_voices": voices}
-
-
-@app.post("/api/clone-voice")
-async def clone_voice(voice_id: str, name: str = ""):
-    """Clone a voice using ElevenLabs API from uploaded voice sample."""
-    if not ELEVENLABS_API_KEY:
-        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
-    
-    # Find the voice file (try different extensions)
-    voice_file = None
-    for ext in ['.webm', '.wav', '.mp3', '.ogg']:
-        candidate = VOICES_DIR / f"{voice_id}{ext}"
-        if candidate.exists():
-            voice_file = candidate
-            break
-    
-    if not voice_file:
-        raise HTTPException(status_code=404, detail=f"Voice sample {voice_id} not found")
-    
-    logger.info(f"Cloning voice from {voice_file}")
-    
+    """Return list of cloned voices, synced with ElevenLabs."""
     try:
-        # Upload to ElevenLabs
+        # Fetch voices from ElevenLabs API
         headers = {"xi-api-key": ELEVENLABS_API_KEY}
+        response = requests.get(
+            "https://api.elevenlabs.io/v1/voices",
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
         
-        with open(voice_file, "rb") as f:
-            files = {"files": (voice_file.name, f, "audio/webm")}
-            data = {
-                "name": name or voice_id,
-                "description": f"Cloned voice from {voice_id}"
-            }
-            
-            response = requests.post(
-                "https://api.elevenlabs.io/v1/voices/add",
-                headers=headers,
-                files=files,
-                data=data,
-                timeout=60
-            )
-            response.raise_for_status()
+        elevenlabs_voices = response.json().get("voices", [])
         
-        result = response.json()
-        elevenlabs_voice_id = result["voice_id"]
+        # Filter to only cloned voices (not premade ones)
+        cloned_from_api = [
+            v for v in elevenlabs_voices 
+            if v.get("category") == "cloned"
+        ]
         
-        # Save mapping to config
+        # Load local config
         config_file = STORAGE_DIR / "config.json"
         if config_file.exists():
             config = json.loads(config_file.read_text())
+            local_cloned = config.get("cloned_voices", {})
         else:
-            config = {"voices": [], "cloned_voices": {}}
+            local_cloned = {}
         
-        if "cloned_voices" not in config:
-            config["cloned_voices"] = {}
+        # Merge: Use ElevenLabs as source of truth, enhance with local metadata
+        cloned_voices = {}
         
-        from datetime import datetime
-        config["cloned_voices"][voice_id] = {
-            "elevenlabs_id": elevenlabs_voice_id,
-            "name": name or voice_id,
-            "created_at": datetime.now().isoformat()
-        }
+        for el_voice in cloned_from_api:
+            el_id = el_voice["voice_id"]
+            el_name = el_voice["name"]
+            
+            # Find matching local entry
+            local_match = None
+            for vid, info in local_cloned.items():
+                if info.get("elevenlabs_id") == el_id:
+                    local_match = (vid, info)
+                    break
+            
+            if local_match:
+                voice_id, info = local_match
+                cloned_voices[voice_id] = {
+                    "elevenlabs_id": el_id,
+                    "name": info.get("name", el_name),
+                    "created_at": info.get("created_at", "")
+                }
+            else:
+                # Voice exists in ElevenLabs but not in local config
+                cloned_voices[el_name] = {
+                    "elevenlabs_id": el_id,
+                    "name": el_name,
+                    "created_at": ""
+                }
         
-        config_file.write_text(json.dumps(config, indent=2))
+        # Format for frontend
+        voices = [
+            {
+                "id": voice_id,
+                "name": data["name"],
+                "elevenlabs_id": data["elevenlabs_id"],
+                "created_at": data.get("created_at", "")
+            }
+            for voice_id, data in cloned_voices.items()
+        ]
         
-        logger.info(f"Voice cloned successfully: {voice_id} -> {elevenlabs_voice_id}")
-        return {
-            "ok": True,
-            "voice_id": voice_id,
-            "elevenlabs_id": elevenlabs_voice_id,
-            "name": name or voice_id
-        }
+        return {"cloned_voices": voices}
         
     except requests.exceptions.RequestException as e:
-        logger.error(f"ElevenLabs API error: {e}")
-        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
-    except Exception as e:
-        logger.error(f"Voice cloning error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
+        logger.error(f"Failed to fetch ElevenLabs voices: {e}")
+        # Fallback to local config
+        config_file = STORAGE_DIR / "config.json"
+        if not config_file.exists():
+            return {"cloned_voices": []}
+        
+        config = json.loads(config_file.read_text())
+        cloned_voices = config.get("cloned_voices", {})
+        
+        voices = [
+            {
+                "id": voice_id,
+                "name": data["name"],
+                "elevenlabs_id": data["elevenlabs_id"],
+                "created_at": data.get("created_at", "")
+            }
+            for voice_id, data in cloned_voices.items()
+        ]
+        
+        return {"cloned_voices": voices}
 
 
-@app.get("/api/cloned-voices")
-async def get_cloned_voices():
-    """Return list of cloned voices."""
+@app.delete("/api/delete-cloned-voice", dependencies=[Depends(verify_auth)])
+async def delete_cloned_voice(voice_id: str):
+    """Delete a cloned voice from config and ElevenLabs."""
     config_file = STORAGE_DIR / "config.json"
     if not config_file.exists():
-        return {"cloned_voices": []}
+        raise HTTPException(status_code=404, detail="No voices found")
     
     config = json.loads(config_file.read_text())
     cloned_voices = config.get("cloned_voices", {})
     
-    # Format for frontend
-    voices = [
-        {
-            "id": voice_id,
-            "name": data["name"],
-            "elevenlabs_id": data["elevenlabs_id"],
-            "created_at": data.get("created_at", "")
-        }
-        for voice_id, data in cloned_voices.items()
-    ]
+    if voice_id not in cloned_voices:
+        raise HTTPException(status_code=404, detail=f"Voice {voice_id} not found")
     
-    return {"cloned_voices": voices}
+    elevenlabs_id = cloned_voices[voice_id]["elevenlabs_id"]
+    
+    # Delete from ElevenLabs (optional - may want to keep for reuse)
+    if ELEVENLABS_API_KEY:
+        try:
+            headers = {"xi-api-key": ELEVENLABS_API_KEY}
+            response = requests.delete(
+                f"https://api.elevenlabs.io/v1/voices/{elevenlabs_id}",
+                headers=headers,
+                timeout=10
+            )
+            # Don't fail if ElevenLabs delete fails
+            if response.ok:
+                logger.info(f"Deleted voice from ElevenLabs: {elevenlabs_id}")
+            else:
+                logger.warning(f"Failed to delete from ElevenLabs: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"ElevenLabs delete error: {e}")
+    
+    # Delete from config
+    del cloned_voices[voice_id]
+    config["cloned_voices"] = cloned_voices
+    config_file.write_text(json.dumps(config, indent=2))
+    
+    # Delete voice sample file if exists
+    for ext in ['.webm', '.wav', '.mp3', '.ogg']:
+        voice_file = VOICES_DIR / f"{voice_id}{ext}"
+        if voice_file.exists():
+            voice_file.unlink()
+            logger.info(f"Deleted voice file: {voice_file}")
+            break
+    
+    logger.info(f"Voice deleted: {voice_id}")
+    return {"ok": True, "deleted_voice_id": voice_id}
 
 
-@app.get("/api/config")
+@app.get("/api/config", dependencies=[Depends(verify_auth)])
 async def get_config():
     cfg_file = STORAGE_DIR / "config.json"
     if not cfg_file.exists():
@@ -664,7 +768,7 @@ async def get_config():
     return json.loads(cfg_file.read_text())
 
 
-@app.post("/api/config")
+@app.post("/api/config", dependencies=[Depends(verify_auth)])
 async def save_config(payload: dict):
     cfg_file = STORAGE_DIR / "config.json"
     cfg_file.write_text(json.dumps(payload, indent=2))
@@ -679,7 +783,7 @@ async def health():
     return {"status": "ok", "uptime_seconds": uptime, "azure_blob_configured": blob_ok}
 
 
-@app.get("/storage/{filename}")
+@app.get("/storage/{filename}", dependencies=[Depends(verify_auth)])
 async def serve_audio(filename: str):
     """Serve audio files with proper CORS headers for cross-origin playback."""
     file_path = STORAGE_DIR / filename

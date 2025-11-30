@@ -18,6 +18,7 @@ __pycache__/
 # Backend deployment secrets
 backend/.env.production
 backend/.env.local
+backend/.pw
 
 python_code/README_private.md
 
