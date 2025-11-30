@@ -6,3 +6,4 @@ aiofiles>=23.1.0
 gTTS>=2.3.0
 azure-storage-blob>=12.14.0
 python-multipart>=0.0.5
+requests>=2.31.0

@@ -38,19 +38,55 @@
 
     async function loadVoices() {
       try {
+        // Load config voices
         const res = await fetch(API_BASE + '/api/config');
         const cfg = await res.json();
+        
+        // Load cloned voices
+        const clonedRes = await fetch(API_BASE + '/api/cloned-voices');
+        const clonedData = await clonedRes.json();
+        
         const sel = document.getElementById('voiceSelect');
         sel.innerHTML = '';
-        (cfg.voices || ['default']).forEach(v => {
+        
+        // Add OpenAI voices with gender labels
+        const openaiVoices = [
+          {id: 'alloy', label: 'Alloy (Neutral)'},
+          {id: 'echo', label: 'Echo (Male)'},
+          {id: 'fable', label: 'Fable (Male)'},
+          {id: 'onyx', label: 'Onyx (Male)'},
+          {id: 'nova', label: 'Nova (Female)'},
+          {id: 'shimmer', label: 'Shimmer (Female)'},
+          {id: 'ash', label: 'Ash (Male)'},
+          {id: 'sage', label: 'Sage (Neutral)'},
+          {id: 'coral', label: 'Coral (Female)'}
+        ];
+        const openaiGroup = document.createElement('optgroup');
+        openaiGroup.label = 'OpenAI Voices';
+        openaiVoices.forEach(v => {
           const o = document.createElement('option');
-          o.value = v; o.textContent = v;
-          sel.appendChild(o);
+          o.value = v.id;
+          o.textContent = v.label;
+          openaiGroup.appendChild(o);
         });
+        sel.appendChild(openaiGroup);
+        
+        // Add cloned voices
+        if (clonedData.cloned_voices && clonedData.cloned_voices.length > 0) {
+          const clonedGroup = document.createElement('optgroup');
+          clonedGroup.label = '🎤 Cloned Voices (ElevenLabs)';
+          clonedData.cloned_voices.forEach(voice => {
+            const o = document.createElement('option');
+            o.value = voice.id;
+            o.textContent = `${voice.name} (Custom)`;
+            clonedGroup.appendChild(o);
+          });
+          sel.appendChild(clonedGroup);
+        }
       } catch (e) {
         console.warn('Failed to load voices from /api/config, using defaults', e);
         const sel = document.getElementById('voiceSelect');
-        ['default','female_1','male_1'].forEach(v => {
+        ['alloy','echo','fable','onyx','nova','shimmer'].forEach(v => {
           const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o);
         });
       }
@@ -225,6 +261,42 @@
             
             const result = await res.json();
             recordStatus.innerHTML = `<p style="color:green;">✓ Voice sample saved: ${result.voice_id}</p>`;
+            
+            // Add clone button
+            const cloneBtn = document.createElement('button');
+            cloneBtn.textContent = '🎤 Clone This Voice with ElevenLabs';
+            cloneBtn.style.marginTop = '10px';
+            cloneBtn.onclick = async () => {
+              const voiceName = prompt('Enter a name for this cloned voice:', result.name || result.voice_id);
+              if (!voiceName) return;
+              
+              cloneBtn.disabled = true;
+              cloneBtn.textContent = 'Cloning voice...';
+              
+              try {
+                const cloneRes = await fetch(`${API_BASE}/api/clone-voice?voice_id=${result.voice_id}&name=${encodeURIComponent(voiceName)}`, {
+                  method: 'POST'
+                });
+                
+                if (!cloneRes.ok) {
+                  const error = await cloneRes.json();
+                  throw new Error(error.detail || 'Cloning failed');
+                }
+                
+                const cloneResult = await cloneRes.json();
+                alert(`✅ Voice cloned successfully!\n\nVoice ID: ${cloneResult.voice_id}\nElevenLabs ID: ${cloneResult.elevenlabs_id}`);
+                
+                // Reload voices
+                await loadVoices();
+                
+              } catch (error) {
+                alert(`❌ Voice cloning failed: ${error.message}`);
+                cloneBtn.disabled = false;
+                cloneBtn.textContent = '🎤 Clone This Voice with ElevenLabs';
+              }
+            };
+            
+            recordStatus.appendChild(cloneBtn);
             
             // Reload voices to include the new one
             await loadVoicesIncludingCustom();

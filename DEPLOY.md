@@ -77,3 +77,6 @@ az webapp log deployment show --name asiaspanel-backend --resource-group asiaspa
 ```powershell
 az webapp log download --name asiaspanel-backend --resource-group asiaspanel-web2 --log-file logs.zip
 ```
+
+### Step 5: Do not forget to deploy the front end
+ - git commit!

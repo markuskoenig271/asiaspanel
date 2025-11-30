@@ -9,7 +9,7 @@ if (!(Test-Path "app.py")) {
 }
 
 # Auto-load .env.production if it exists and variables not already set
-if ((Test-Path ".env.production") -and (!$env:OPENAI_API_KEY -or !$env:AZURE_STORAGE_CONNECTION_STRING)) {
+if ((Test-Path ".env.production") -and (!$env:OPENAI_API_KEY -or !$env:AZURE_STORAGE_CONNECTION_STRING -or !$env:ELEVENLABS_API_KEY)) {
     Write-Host "Loading environment variables from .env.production..." -ForegroundColor Yellow
     Get-Content .env.production | ForEach-Object {
         if ($_ -match '^([^=]+)=(.*)$') {
@@ -34,6 +34,11 @@ if (!$env:AZURE_STORAGE_CONNECTION_STRING) {
     Write-Host "  Set manually: `$env:AZURE_STORAGE_CONNECTION_STRING='your-connection-string'" -ForegroundColor Gray
     Write-Host "  Or create .env.production file" -ForegroundColor Gray
 }
+if (!$env:ELEVENLABS_API_KEY) {
+    Write-Host "Warning: ELEVENLABS_API_KEY not set in environment" -ForegroundColor Yellow
+    Write-Host "  Set manually: `$env:ELEVENLABS_API_KEY='your-key'" -ForegroundColor Gray
+    Write-Host "  Or create .env.production file" -ForegroundColor Gray
+}
 
 # Deploy app
 Write-Host "`nDeploying app..." -ForegroundColor Green
@@ -49,7 +54,9 @@ Write-Host "`nConfiguring environment variables..." -ForegroundColor Green
 az webapp config appsettings set --name asiaspanel-backend --resource-group asiaspanel-web2 --settings `
     OPENAI_API_KEY="$env:OPENAI_API_KEY" `
     AZURE_STORAGE_CONNECTION_STRING="$env:AZURE_STORAGE_CONNECTION_STRING" `
-    AZURE_TTS_CONTAINER="tts-audio"
+    ELEVENLABS_API_KEY="$env:ELEVENLABS_API_KEY" `
+    AZURE_TTS_CONTAINER="tts-audio" `
+    BACKEND_URL="https://asiaspanel-backend.azurewebsites.net"
 
 # Set startup command
 Write-Host "`nConfiguring startup command..." -ForegroundColor Green

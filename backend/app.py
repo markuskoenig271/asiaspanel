@@ -12,6 +12,7 @@ import uuid
 import asyncio
 import time
 import logging
+import requests
 
 # Configure logging to both console and file
 # For Azure: only log to console (Azure captures stdout)
@@ -64,6 +65,9 @@ load_dotenv(str(BASE_DIR.parent / '.env'))
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 if OPENAI_API_KEY and openai is not None:
     openai.api_key = OPENAI_API_KEY
+
+# ElevenLabs API key for voice cloning
+ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')
 
 # Azure Storage connection string (optional). If set, we'll upload TTS to blob storage.
 AZURE_CONN = os.getenv('AZURE_STORAGE_CONNECTION_STRING')
@@ -175,6 +179,11 @@ async def tts(req: TTSRequest):
 
     def _return_uploaded(path: Path):
         logger.info(f"Attempting to upload/return audio: {path.name}")
+        
+        # Determine the base URL for audio endpoints
+        # In production (Azure), use absolute URL; locally use relative URL
+        backend_url = os.getenv('BACKEND_URL', '')
+        
         if _blob_service is not None:
             try:
                 container_name = os.getenv('AZURE_TTS_CONTAINER', 'tts-audio')
@@ -188,16 +197,59 @@ async def tts(req: TTSRequest):
                 blob_client = _blob_service.get_blob_client(container=container_name, blob=path.name)
                 with open(path, 'rb') as data:
                     blob_client.upload_blob(data, overwrite=True)
-                proxied = f"/api/audio/{path.name}"
+                proxied = f"{backend_url}/api/audio/{path.name}"
                 logger.info(f"Audio uploaded to Azure, returning proxied URL: {proxied}")
                 return {"url": proxied, "mock": False, "storage": "azure", "blob_url": blob_client.url}
             except Exception as e:
                 logger.error(f"Azure blob upload failed: {e}", exc_info=True)
-                return {"url": f"/storage/{path.name}", "mock": False, "error": str(e)}
+                return {"url": f"{backend_url}/storage/{path.name}", "mock": False, "error": str(e)}
         logger.info(f"No Azure blob configured, returning local storage URL")
-        return {"url": f"/storage/{path.name}", "mock": False}
+        return {"url": f"{backend_url}/storage/{path.name}", "mock": False}
     
     openai_error = None
+
+    # Check if this is a cloned voice (ElevenLabs)
+    config_file = STORAGE_DIR / "config.json"
+    if config_file.exists():
+        config = json.loads(config_file.read_text())
+        cloned_voices = config.get("cloned_voices", {})
+        
+        if req.voice in cloned_voices:
+            # Use ElevenLabs for cloned voices
+            elevenlabs_id = cloned_voices[req.voice]["elevenlabs_id"]
+            logger.info(f"Using ElevenLabs cloned voice: {req.voice} ({elevenlabs_id})")
+            
+            if ELEVENLABS_API_KEY:
+                try:
+                    headers = {"xi-api-key": ELEVENLABS_API_KEY}
+                    data = {
+                        "text": req.text,
+                        "model_id": "eleven_multilingual_v2",
+                        "voice_settings": {
+                            "stability": 0.5,
+                            "similarity_boost": 0.75
+                        }
+                    }
+                    
+                    response = requests.post(
+                        f"https://api.elevenlabs.io/v1/text-to-speech/{elevenlabs_id}",
+                        headers=headers,
+                        json=data,
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    
+                    audio_path.write_bytes(response.content)
+                    logger.info(f"ElevenLabs TTS successful for {audio_filename}")
+                    return _return_uploaded(audio_path)
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"ElevenLabs TTS failed: {e}, falling back to OpenAI")
+                    openai_error = f"ElevenLabs: {str(e)}"
+                    # Fall through to OpenAI/gTTS
+            else:
+                logger.warning("ElevenLabs API key not configured for cloned voice")
+                openai_error = "ElevenLabs API key not configured"
 
     # Try OpenAI TTS if configured
     if OPENAI_API_KEY and openai is not None:
@@ -400,6 +452,208 @@ async def list_voices():
     except Exception as e:
         logger.error(f"Failed to list voices: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to list voices: {str(e)}")
+
+
+@app.post("/api/clone-voice")
+async def clone_voice(voice_id: str, name: str = ""):
+    """Clone a voice using ElevenLabs API from uploaded voice sample."""
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
+    
+    # Find the voice file (try different extensions)
+    voice_file = None
+    for ext in ['.webm', '.wav', '.mp3', '.ogg']:
+        candidate = VOICES_DIR / f"{voice_id}{ext}"
+        if candidate.exists():
+            voice_file = candidate
+            break
+    
+    if not voice_file:
+        raise HTTPException(status_code=404, detail=f"Voice sample {voice_id} not found")
+    
+    logger.info(f"Cloning voice from {voice_file}")
+    
+    try:
+        # Upload to ElevenLabs
+        headers = {"xi-api-key": ELEVENLABS_API_KEY}
+        
+        with open(voice_file, "rb") as f:
+            files = {"files": (voice_file.name, f, "audio/webm")}
+            data = {
+                "name": name or voice_id,
+                "description": f"Cloned voice from {voice_id}"
+            }
+            
+            response = requests.post(
+                "https://api.elevenlabs.io/v1/voices/add",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=60
+            )
+            response.raise_for_status()
+        
+        result = response.json()
+        elevenlabs_voice_id = result["voice_id"]
+        
+        # Save mapping to config
+        config_file = STORAGE_DIR / "config.json"
+        if config_file.exists():
+            config = json.loads(config_file.read_text())
+        else:
+            config = {"voices": [], "cloned_voices": {}}
+        
+        if "cloned_voices" not in config:
+            config["cloned_voices"] = {}
+        
+        from datetime import datetime
+        config["cloned_voices"][voice_id] = {
+            "elevenlabs_id": elevenlabs_voice_id,
+            "name": name or voice_id,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        config_file.write_text(json.dumps(config, indent=2))
+        
+        logger.info(f"Voice cloned successfully: {voice_id} -> {elevenlabs_voice_id}")
+        return {
+            "ok": True,
+            "voice_id": voice_id,
+            "elevenlabs_id": elevenlabs_voice_id,
+            "name": name or voice_id
+        }
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"ElevenLabs API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Voice cloning error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
+
+
+@app.get("/api/cloned-voices")
+async def get_cloned_voices():
+    """Return list of cloned voices."""
+    config_file = STORAGE_DIR / "config.json"
+    if not config_file.exists():
+        return {"cloned_voices": []}
+    
+    config = json.loads(config_file.read_text())
+    cloned_voices = config.get("cloned_voices", {})
+    
+    # Format for frontend
+    voices = [
+        {
+            "id": voice_id,
+            "name": data["name"],
+            "elevenlabs_id": data["elevenlabs_id"],
+            "created_at": data.get("created_at", "")
+        }
+        for voice_id, data in cloned_voices.items()
+    ]
+    
+    return {"cloned_voices": voices}
+
+
+@app.post("/api/clone-voice")
+async def clone_voice(voice_id: str, name: str = ""):
+    """Clone a voice using ElevenLabs API from uploaded voice sample."""
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=500, detail="ElevenLabs API key not configured")
+    
+    # Find the voice file (try different extensions)
+    voice_file = None
+    for ext in ['.webm', '.wav', '.mp3', '.ogg']:
+        candidate = VOICES_DIR / f"{voice_id}{ext}"
+        if candidate.exists():
+            voice_file = candidate
+            break
+    
+    if not voice_file:
+        raise HTTPException(status_code=404, detail=f"Voice sample {voice_id} not found")
+    
+    logger.info(f"Cloning voice from {voice_file}")
+    
+    try:
+        # Upload to ElevenLabs
+        headers = {"xi-api-key": ELEVENLABS_API_KEY}
+        
+        with open(voice_file, "rb") as f:
+            files = {"files": (voice_file.name, f, "audio/webm")}
+            data = {
+                "name": name or voice_id,
+                "description": f"Cloned voice from {voice_id}"
+            }
+            
+            response = requests.post(
+                "https://api.elevenlabs.io/v1/voices/add",
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=60
+            )
+            response.raise_for_status()
+        
+        result = response.json()
+        elevenlabs_voice_id = result["voice_id"]
+        
+        # Save mapping to config
+        config_file = STORAGE_DIR / "config.json"
+        if config_file.exists():
+            config = json.loads(config_file.read_text())
+        else:
+            config = {"voices": [], "cloned_voices": {}}
+        
+        if "cloned_voices" not in config:
+            config["cloned_voices"] = {}
+        
+        from datetime import datetime
+        config["cloned_voices"][voice_id] = {
+            "elevenlabs_id": elevenlabs_voice_id,
+            "name": name or voice_id,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        config_file.write_text(json.dumps(config, indent=2))
+        
+        logger.info(f"Voice cloned successfully: {voice_id} -> {elevenlabs_voice_id}")
+        return {
+            "ok": True,
+            "voice_id": voice_id,
+            "elevenlabs_id": elevenlabs_voice_id,
+            "name": name or voice_id
+        }
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"ElevenLabs API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
+    except Exception as e:
+        logger.error(f"Voice cloning error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Voice cloning failed: {str(e)}")
+
+
+@app.get("/api/cloned-voices")
+async def get_cloned_voices():
+    """Return list of cloned voices."""
+    config_file = STORAGE_DIR / "config.json"
+    if not config_file.exists():
+        return {"cloned_voices": []}
+    
+    config = json.loads(config_file.read_text())
+    cloned_voices = config.get("cloned_voices", {})
+    
+    # Format for frontend
+    voices = [
+        {
+            "id": voice_id,
+            "name": data["name"],
+            "elevenlabs_id": data["elevenlabs_id"],
+            "created_at": data.get("created_at", "")
+        }
+        for voice_id, data in cloned_voices.items()
+    ]
+    
+    return {"cloned_voices": voices}
 
 
 @app.get("/api/config")
